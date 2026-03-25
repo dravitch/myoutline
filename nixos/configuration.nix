@@ -87,12 +87,12 @@ in
 
     # PocketID a un bug connu avec les unix sockets (nixpkgs #434306)
     # On lui ouvre une connexion TCP localhost uniquement
+    # "localhost" est déjà le défaut du module NixOS PostgreSQL.
+    # On ajoute uniquement la règle d'accès TCP pour PocketID
+    # (contournement bug nixpkgs #434306 : unix socket non supporté).
     authentication = lib.mkAfter ''
       host  pocketid  pocketid  127.0.0.1/32  trust
     '';
-    settings = {
-      listen_addresses = "127.0.0.1";   # TCP uniquement sur loopback
-    };
   };
 
   # ============================================================
