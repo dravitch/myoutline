@@ -1,0 +1,8 @@
+# Ne jamais versionner les secrets ni la config hardware auto-générée
+hardware-configuration.nix
+secrets/*.env
+secrets/*.key
+secrets/*.secret
+
+# Sauf le README et les templates
+!secrets/README.md
