@@ -14,6 +14,14 @@ let
 in
 {
   # ============================================================
+  #  Licences non-libres
+  # ============================================================
+  # Outline est sous licence BSL 1.1 (non-libre au sens Nix).
+  # On l'autorise explicitement plutôt qu'un allowUnfree global.
+  nixpkgs.config.allowUnfreePredicate = pkg:
+    builtins.elem (lib.getName pkg) [ "outline" ];
+
+  # ============================================================
   #  Système de base
   # ============================================================
   system.stateVersion = "24.11";
