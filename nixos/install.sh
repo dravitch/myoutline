@@ -35,9 +35,9 @@ if [ ! -f "${NIXOS_CONFIG_DIR}/hardware-configuration.nix" ]; then
 fi
 
 # Copier les fichiers de config (sans écraser hardware-configuration.nix)
-cp flake.nix        "${NIXOS_CONFIG_DIR}/"
+cp flake.nix         "${NIXOS_CONFIG_DIR}/"
 cp configuration.nix "${NIXOS_CONFIG_DIR}/"
-cp .gitignore       "${NIXOS_CONFIG_DIR}/"
+cp .gitignore        "${NIXOS_CONFIG_DIR}/"
 mkdir -p "${NIXOS_CONFIG_DIR}/secrets"
 cp secrets/README.md "${NIXOS_CONFIG_DIR}/secrets/"
 
@@ -50,39 +50,32 @@ info "Création des secrets..."
 mkdir -p /run/secrets
 chmod 700 /run/secrets
 
-if [ ! -f /run/secrets/outline-secret-key ]; then
-    openssl rand -hex 32 > /run/secrets/outline-secret-key
-    chmod 600 /run/secrets/outline-secret-key
-    info "outline-secret-key généré"
+# Secrets Outline (regroupés dans un seul fichier env pour le container)
+if [ ! -f /run/secrets/outline-env ]; then
+    SECRET_KEY=$(openssl rand -hex 32)
+    UTILS_SECRET=$(openssl rand -hex 32)
+    cat > /run/secrets/outline-env <<EOF
+SECRET_KEY=${SECRET_KEY}
+UTILS_SECRET=${UTILS_SECRET}
+OIDC_CLIENT_SECRET=PLACEHOLDER_REMPLACER_APRES_POCKETID
+EOF
+    chmod 600 /run/secrets/outline-env
+    info "outline-env généré (SECRET_KEY + UTILS_SECRET)"
+    warn "OIDC_CLIENT_SECRET est un placeholder — à mettre à jour après PocketID"
 fi
 
-if [ ! -f /run/secrets/outline-utils-secret ]; then
-    openssl rand -hex 32 > /run/secrets/outline-utils-secret
-    chmod 600 /run/secrets/outline-utils-secret
-    info "outline-utils-secret généré"
-fi
-
+# Secret PocketID
 if [ ! -f /run/secrets/pocketid-env ]; then
     echo "JWT_SECRET=$(openssl rand -hex 32)" > /run/secrets/pocketid-env
     chmod 600 /run/secrets/pocketid-env
     info "pocketid-env généré"
 fi
 
-if [ ! -f /run/secrets/outline-oidc-secret ]; then
-    warn "outline-oidc-secret absent !"
-    warn "Tu devras le créer APRÈS avoir configuré PocketID :"
-    warn "  echo -n '<SECRET_POCKETID>' > /run/secrets/outline-oidc-secret"
-    warn "  chmod 600 /run/secrets/outline-oidc-secret"
-    warn "  nixos-rebuild switch --flake /etc/nixos#outline-server"
-    # Placeholder pour permettre le premier build
-    echo -n "PLACEHOLDER_REMPLACER_APRES_POCKETID" > /run/secrets/outline-oidc-secret
-    chmod 600 /run/secrets/outline-oidc-secret
-fi
-
 # ============================================================
 # Étape 4 : Premier nixos-rebuild
 # ============================================================
-info "Premier nixos-rebuild switch (peut prendre quelques minutes)..."
+info "Premier nixos-rebuild switch..."
+info "(Outline tourne via container Docker — pas de compilation depuis les sources)"
 nixos-rebuild switch --flake "${NIXOS_CONFIG_DIR}#outline-server"
 
 # ============================================================
@@ -94,7 +87,7 @@ echo " Installation terminée !"
 echo "=========================================="
 echo ""
 echo "Services démarrés :"
-echo "  systemctl status outline"
+echo "  systemctl status podman-outline"
 echo "  systemctl status pocket-id"
 echo "  systemctl status caddy"
 echo "  systemctl status postgresql"
@@ -112,9 +105,9 @@ echo "3. Dans PocketID, crée le client OIDC Outline :"
 echo "   Redirect URI : https://outline.lab.local/auth/oidc.callback"
 echo "   Scopes       : openid profile email"
 echo ""
-echo "4. Mets à jour le secret OIDC et relance :"
-echo "   echo -n '<SECRET>' > /run/secrets/outline-oidc-secret"
-echo "   nixos-rebuild switch --flake /etc/nixos#outline-server"
+echo "4. Mets à jour le secret OIDC dans outline-env et relance :"
+echo "   sed -i 's/^OIDC_CLIENT_SECRET=.*/OIDC_CLIENT_SECRET=<SECRET>/' /run/secrets/outline-env"
+echo "   systemctl restart podman-outline"
 echo ""
 echo "5. Accède à Outline :"
 echo "   https://outline.lab.local"

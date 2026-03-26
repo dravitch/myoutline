@@ -14,14 +14,6 @@ let
 in
 {
   # ============================================================
-  #  Licences non-libres
-  # ============================================================
-  # Outline est sous licence BSL 1.1 (non-libre au sens Nix).
-  # On l'autorise explicitement plutôt qu'un allowUnfree global.
-  nixpkgs.config.allowUnfreePredicate = pkg:
-    builtins.elem (lib.getName pkg) [ "outline" ];
-
-  # ============================================================
   #  Système de base
   # ============================================================
   system.stateVersion = "24.11";
@@ -68,101 +60,86 @@ in
   # ============================================================
   #  PostgreSQL
   # ============================================================
-  # Utilise des unix sockets par défaut — plus rapide, pas de réseau
   services.postgresql = {
     enable = true;
     package = pkgs.postgresql_16;
 
     ensureDatabases = [ "outline" "pocketid" ];
     ensureUsers = [
-      {
-        name = "outline";
-        ensureDBOwnership = true;
-      }
-      {
-        name = "pocketid";
-        ensureDBOwnership = true;
-      }
+      { name = "outline";  ensureDBOwnership = true; }
+      { name = "pocketid"; ensureDBOwnership = true; }
     ];
 
-    # PocketID a un bug connu avec les unix sockets (nixpkgs #434306)
-    # On lui ouvre une connexion TCP localhost uniquement
-    # "localhost" est déjà le défaut du module NixOS PostgreSQL.
-    # On ajoute uniquement la règle d'accès TCP pour PocketID
-    # (contournement bug nixpkgs #434306 : unix socket non supporté).
+    # TCP localhost pour outline (container) et pocketid (bug unix socket)
     authentication = lib.mkAfter ''
+      host  outline   outline   127.0.0.1/32  trust
       host  pocketid  pocketid  127.0.0.1/32  trust
     '';
   };
 
   # ============================================================
-  #  Redis (unix socket pour Outline)
+  #  Redis — TCP + unix socket (container outline accède via TCP)
   # ============================================================
   services.redis.servers."outline" = {
     enable = true;
-    unixSocket = "/run/redis-outline/redis.sock";
+    unixSocket     = "/run/redis-outline/redis.sock";
     unixSocketPerm = 660;
-    # Pas de port TCP exposé, uniquement unix socket
-    port = 0;
+    port = 6379;
+    bind = "127.0.0.1";
   };
 
-  # L'utilisateur outline doit pouvoir lire le socket Redis
-  users.users.outline.extraGroups = [ "redis-outline" ];
+  # ============================================================
+  #  Répertoire de données Outline
+  #  UID 1001 = utilisateur dans l'image Docker officielle outlinewiki/outline
+  # ============================================================
+  systemd.tmpfiles.rules = [
+    "d /var/lib/outline/data 0750 root root -"
+    "Z /var/lib/outline/data 0750 1001 1001 -"
+  ];
 
   # ============================================================
-  #  Secrets (via fichiers, jamais dans le nix store)
-  # ============================================================
-  # Ces fichiers doivent exister sur le système AVANT nixos-rebuild switch
-  # Voir secrets/README.md pour les créer
+  #  Outline — image Docker officielle (évite la compilation depuis les sources)
   #
-  #   /run/secrets/outline-secret-key     → openssl rand -hex 32
-  #   /run/secrets/outline-utils-secret   → openssl rand -hex 32
-  #   /run/secrets/outline-oidc-secret    → client secret PocketID
-  #   /run/secrets/pocketid-jwt-secret    → openssl rand -hex 32
-  #
-  # Recommandé à terme : sops-nix ou agenix pour chiffrer les secrets
-  # dans le dépôt git.
-
+  #  Secrets dans /run/secrets/outline-env (jamais dans le nix store) :
+  #    SECRET_KEY=<openssl rand -hex 32>
+  #    UTILS_SECRET=<openssl rand -hex 32>
+  #    OIDC_CLIENT_SECRET=<secret depuis PocketID>
   # ============================================================
-  #  Outline Wiki
-  # ============================================================
-  services.outline = {
-    enable = true;
-    publicUrl = "https://${outlineDomain}";
-    port = outlinePort;
-    forceHttps = false;   # Caddy gère le TLS en amont
+  virtualisation.oci-containers = {
+    backend = "podman";
 
-    # PostgreSQL via unix socket (performant, pas de mot de passe requis)
-    databaseUrl = "postgres:///outline?host=/run/postgresql";
+    containers.outline = {
+      image     = "docker.io/outlinewiki/outline:latest";
+      autoStart = true;
 
-    # Redis via unix socket
-    redisUrl = "redis+socket:///run/redis-outline/redis.sock";
+      # Partage le réseau hôte → accès direct à postgresql/redis sur 127.0.0.1
+      extraOptions = [ "--network=host" ];
 
-    # Secrets dans des fichiers (pas dans le nix store)
-    secretKeyFile  = "/run/secrets/outline-secret-key";
-    utilsSecretFile = "/run/secrets/outline-utils-secret";
+      # Variables sensibles dans un fichier (SECRET_KEY, UTILS_SECRET, OIDC_CLIENT_SECRET)
+      environmentFiles = [ "/run/secrets/outline-env" ];
 
-    # Stockage local des fichiers
-    storage = {
-      storageType = "local";
-      localRootDir = "/var/lib/outline/data";
+      environment = {
+        DATABASE_URL             = "postgres://outline@127.0.0.1/outline";
+        REDIS_URL                = "redis://127.0.0.1:6379";
+        URL                      = "https://${outlineDomain}";
+        PORT                     = toString outlinePort;
+        FORCE_HTTPS              = "false";
+        OIDC_CLIENT_ID           = "outline";
+        OIDC_AUTH_URI            = "https://${pocketDomain}/authorize";
+        OIDC_TOKEN_URI           = "https://${pocketDomain}/api/oidc/token";
+        OIDC_USERINFO_URI        = "https://${pocketDomain}/api/oidc/userinfo";
+        OIDC_DISPLAY_NAME        = "PocketID";
+        OIDC_SCOPES              = "openid profile email";
+        OIDC_USERNAME_CLAIM      = "email";
+        DEFAULT_LANGUAGE         = "fr_FR";
+        ENABLE_UPDATES           = "false";
+        FILE_STORAGE             = "local";
+        FILE_STORAGE_LOCAL_ROOT_DIR = "/var/lib/outline/data";
+        NODE_ENV                 = "production";
+      };
+
+      volumes = [ "/var/lib/outline/data:/var/lib/outline/data" ];
     };
-
-    # Authentification OIDC via PocketID
-    oidcAuthentication = {
-      authUrl     = "https://${pocketDomain}/authorize";
-      tokenUrl    = "https://${pocketDomain}/api/oidc/token";
-      userinfoUrl = "https://${pocketDomain}/api/oidc/userinfo";
-      clientId    = "outline";
-      # Le secret OIDC lu depuis un fichier, jamais en clair dans la config
-      clientSecretFile = "/run/secrets/outline-oidc-secret";
-      scopes      = [ "openid" "profile" "email" ];
-      displayName = "PocketID";
-      usernameClaim = "email";
-    };
-
-    defaultLanguage   = "fr_FR";
-    enableUpdateCheck = false;
   };
 
   # ============================================================
@@ -172,37 +149,22 @@ in
     enable = true;
 
     settings = {
-      # URL publique de PocketID (utilisée dans les redirections OIDC)
-      APP_URL = "https://${pocketDomain}";
-
-      # PostgreSQL via TCP localhost (contournement bug unix socket)
-      DB_PROVIDER = "postgres";
+      APP_URL              = "https://${pocketDomain}";
+      DB_PROVIDER          = "postgres";
       DB_CONNECTION_STRING = "host=127.0.0.1 port=5432 user=pocketid dbname=pocketid sslmode=disable";
-
-      # Port d'écoute interne
-      PORT = toString pocketIdPort;
-
-      # Secret JWT (lu depuis un fichier via EnvironmentFile dans le module)
-      # Note : selon la version du module, utiliser soit settings soit
-      # un EnvironmentFile séparé (voir ci-dessous si nécessaire)
+      PORT                 = toString pocketIdPort;
     };
 
-    # Fichier contenant les variables sensibles (JWT_SECRET, etc.)
-    # Le module pocket-id supporte un environmentFile
+    # Fichier contenant JWT_SECRET
     environmentFile = "/run/secrets/pocketid-env";
   };
 
   # ============================================================
   #  Caddy — reverse proxy avec TLS interne
   # ============================================================
-  # "tls internal" = Caddy génère sa propre CA locale et signe les certs.
-  # Il faut faire confiance à la CA Caddy sur les clients :
-  #   curl http://<serveur>:2019/pki/ca/local/certificates → télécharge le cert
-  #   Ou : /var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt
   services.caddy = {
     enable = true;
 
-    # Expose le port d'administration Caddy sur loopback uniquement
     globalConfig = ''
       admin 127.0.0.1:2019
     '';
@@ -233,8 +195,4 @@ in
       '';
     };
   };
-
-  # Ouvrir le port Caddy admin sur loopback (déjà filtré par firewall)
-  # Pour récupérer le certificat CA local :
-  # curl -s http://127.0.0.1:2019/pki/ca/local/certificates | head -1
 }
